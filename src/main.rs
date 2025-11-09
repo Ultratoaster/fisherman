@@ -16,7 +16,6 @@ use ratatui::{
     Terminal,
 };
 use ratatui::text::{Span, Line, Text};
-use std::path::Path;
 
 fn de_hex_to_color<'de, D>(deserializer: D) -> Result<Color, D::Error>
 where
