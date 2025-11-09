@@ -9,3 +9,4 @@ crossterm = "0.28"
 csv = "1.1"
 serde = { version = "1.0.228", features = ["derive"] }
 encoding = "0.2"
+rand = "0.8"

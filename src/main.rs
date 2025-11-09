@@ -1,9 +1,13 @@
 use std::io;
-use std::fs;
 use std::time::{Duration, Instant};
 use std::thread;
-use std::collections::HashMap;
-use serde::Deserialize;
+
+mod csv_frames;
+mod ocean;
+mod widgets;
+mod fisherman;
+mod fish;
+
 use crossterm::{
     event::{self, Event, KeyCode},
     execute,
@@ -12,109 +16,17 @@ use crossterm::{
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Paragraph},
-    style::Color,
     Terminal,
 };
-use ratatui::text::{Span, Line, Text};
+use ratatui::text::Text;
+use ratatui::layout::Rect;
+use rand::Rng;
 
-fn de_hex_to_color<'de, D>(deserializer: D) -> Result<Color, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let s = String::deserialize(deserializer)?;
-    let hex = s.trim_start_matches('#');
-    if hex.len() != 6 {
-        return Err(serde::de::Error::custom("invalid hex color length"));
-    }
-    let r = u8::from_str_radix(&hex[0..2], 16).map_err(serde::de::Error::custom)?;
-    let g = u8::from_str_radix(&hex[2..4], 16).map_err(serde::de::Error::custom)?;
-    let b = u8::from_str_radix(&hex[4..6], 16).map_err(serde::de::Error::custom)?;
-    Ok(Color::Rgb(r, g, b))
-}
-
-#[derive(Debug, Deserialize)]
-struct CellRow {
-    #[serde(rename = "X")] pub x: u32,
-    #[serde(rename = "Y")] pub y: u32,
-    #[serde(rename = "ASCII")] pub ascii: String,
-    #[serde(rename = "Foreground", deserialize_with = "de_hex_to_color")] pub foreground: Color,
-    #[serde(rename = "Background", deserialize_with = "de_hex_to_color")] pub background: Color,
-}
-
-
-fn load_csv_frame(path: &str) -> io::Result<Text<'static>> {
-    let content = fs::read_to_string(path)?;
-    let mut reader = csv::Reader::from_reader(content.as_bytes());
-
-    let mut cells: HashMap<(u32, u32), (char, (u8, u8, u8), (u8, u8, u8))> = HashMap::new();
-    let mut max_x = 0;
-    let mut max_y = 0;
-
-    for result in reader.deserialize() {
-        let row: CellRow = result.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let x = row.x;
-        let y = row.y;
-    // CSV now stores the actual character (as a 1-char string).
-    // Take the first char or default to space if empty.
-    let ch = row.ascii.chars().next().unwrap_or(' ');
-
-        let fg_rgb = match row.foreground {
-            Color::Rgb(r, g, b) => (r, g, b),
-            _ => (255, 255, 255),
-        };
-        let bg_rgb = match row.background {
-            Color::Rgb(r, g, b) => (r, g, b),
-            _ => (0, 0, 0),
-        };
-
-        max_x = max_x.max(x);
-        max_y = max_y.max(y);
-        cells.insert((x, y), (ch, fg_rgb, bg_rgb));
-    }
-
-    let mut rows: Vec<Line> = Vec::with_capacity((max_y as usize) + 1);
-    for y in 0..=max_y {
-        let mut span_row: Vec<Span> = Vec::with_capacity((max_x as usize) + 1);
-        for x in 0..=max_x {
-            if let Some((ch, fg, bg)) = cells.get(&(x, y)) {
-                let styled = Span::styled(
-                    ch.to_string(),
-                    ratatui::style::Style::default()
-                        .fg(Color::Rgb(fg.0, fg.1, fg.2))
-                        .bg(Color::Rgb(bg.0, bg.1, bg.2)),
-                );
-                span_row.push(styled);
-            } else {
-                span_row.push(Span::raw(" "));
-            }
-        }
-        rows.push(Line::from(span_row));
-    }
-
-    Ok(Text::from(rows))
-}
-
-fn load_frames_from_dir(dir: &str) -> io::Result<Vec<Text<'static>>> {
-    let mut paths: Vec<std::path::PathBuf> = fs::read_dir(dir)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().map(|ext| ext == "csv").unwrap_or(false))
-        .collect();
-
-    // sort by filename to get deterministic ordering
-    paths.sort_by_key(|p| p.file_name().map(|s| s.to_owned()));
-
-    let mut frames = Vec::with_capacity(paths.len());
-    for p in paths {
-        let s = p.to_string_lossy().to_string();
-        match load_csv_frame(&s) {
-            Ok(t) => frames.push(t),
-            Err(e) => eprintln!("failed to load {}: {}", s, e),
-        }
-    }
-
-    Ok(frames)
-}
+use fish::{Fish, spawn_fishes};
+use ocean::Ocean;
+use widgets::FishermanDock;
+use fisherman::Fisherman;
+use csv_frames::load_frames_from_dir;
 
 fn main() -> Result<(), io::Error> {
     // Setup terminal
@@ -124,50 +36,155 @@ fn main() -> Result<(), io::Error> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-
-    // Load CSV frames from folder
-    let frames = match load_frames_from_dir("src/fisherman_frames") {
+    // Load optional fish frames from a subfolder. These should be small animations
+    // (e.g. 1-5 lines tall) placed in `src/fisherman_frames/fish/`.
+    let fish_frames = match load_frames_from_dir("src/fisherman_frames/fish") {
         Ok(f) if !f.is_empty() => f,
-        Ok(_) => {
-            disable_raw_mode()?;
-            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-            terminal.show_cursor()?;
-            eprintln!("No CSV frames found in folder");
-            return Err(io::Error::new(io::ErrorKind::NotFound, "no frames"));
-        }
-        Err(e) => {
-            disable_raw_mode()?;
-            execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-            terminal.show_cursor()?;
-            eprintln!("Failed to load frames: {}", e);
-            return Err(e);
-        }
+        _ => Vec::new(),
     };
+
+    // Also try to load directional frames if user places them separately
+    let fish_right = load_frames_from_dir("src/fisherman_frames/fish/right").unwrap_or_else(|_| fish_frames.clone());
+    let fish_left = load_frames_from_dir("src/fisherman_frames/fish/left").unwrap_or_else(|_| Vec::new());
+
+    // fish lanes and entities: use helper from `fish` module
+    let mut rng = rand::thread_rng();
+    let mut fishes: Vec<Fish> = spawn_fishes(&mut rng);
 
     // Simulated "loading" duration and per-frame display time
     let start = Instant::now();
     let load_time = Duration::from_secs(5);
-    let frame_duration = Duration::from_millis(500);
+    // fish layout helper used below
 
+    let mut last_update = Instant::now();
+    // Fisherman leg-kick state
+    let mut fisherman_kick = false;
+    let mut last_kick_toggle = Instant::now();
+    let kick_interval = Duration::from_millis(400);
     loop {
+        let now = Instant::now();
+        let dt = now.duration_since(last_update);
+        last_update = now;
         let elapsed = start.elapsed();
 
-        // Once "done" → show fish caught; otherwise cycle frames
-        let text = if elapsed >= load_time {
-            Text::from("Got one!")
-        } else {
-            let idx = ((elapsed.as_millis() / frame_duration.as_millis()) as usize) % frames.len();
-            frames[idx].clone()
-        };
+        // toggle fisherman kick phase at fixed interval
+        if now.duration_since(last_kick_toggle) >= kick_interval {
+            fisherman_kick = !fisherman_kick;
+            last_kick_toggle = now;
+        }
+
+        // update fish positions using current terminal size
+        if !fishes.is_empty() {
+            if let Ok(size) = terminal.size() {
+                let width = size.width as f32;
+                for fish in fishes.iter_mut() {
+                    fish.x += fish.vx * dt.as_secs_f32();
+                    // random chance to turn around
+                    if rng.gen_bool((dt.as_secs_f32() * 0.05).min(1.0) as f64) {
+                        fish.vx = -fish.vx;
+                        fish.facing_right = !fish.facing_right;
+                    }
+                    if fish.x > width {
+                        if fish.wrap {
+                            fish.x = 0.0;
+                        } else {
+                            fish.x = width.min(fish.x);
+                            fish.vx = -fish.vx;
+                            fish.facing_right = !fish.facing_right;
+                        }
+                    } else if fish.x < 0.0 {
+                        if fish.wrap {
+                            fish.x = width;
+                        } else {
+                            fish.x = 0.0;
+                            fish.vx = -fish.vx;
+                            fish.facing_right = !fish.facing_right;
+                        }
+                    }
+                }
+            }
+        }
 
         terminal.draw(|f| {
             let size = f.area();
-            let block = Block::default()
-                .title("Fisherman")
-                .borders(Borders::ALL);
-            let paragraph = Paragraph::new(text)
-                .block(block);
-            f.render_widget(paragraph, size);
+
+            // Render ocean surface starting 20 rows from the top (clamped).
+            let ocean_h = 4u16;
+            let desired_top: u16 = 20;
+            let top = if size.height > desired_top + ocean_h {
+                desired_top
+            } else if size.height > ocean_h {
+                size.height.saturating_sub(ocean_h)
+            } else {
+                0
+            };
+            let ocean_area = Rect::new(size.x+1, top, size.width-2, ocean_h);
+            f.render_widget(Ocean, ocean_area);
+
+            // Render fisherman/dock anchored at the ocean surface and right edge
+            let dock_w = 16u16;
+            let dock_h = 4u16;
+            // Anchor the dock so its plank row lines up with the ocean surface (ocean_area.y)
+            // and the dock extends left from the right edge of the terminal area.
+                let dock_x = size.x.saturating_add(size.width.saturating_sub(dock_w));
+                // Give the dock area one row of space above the plank so the fisherman
+                // (which is drawn one row above the plank) can be rendered inside the
+                // widget's area. Clamp at the top of the screen.
+                let dock_y = ocean_area.y.saturating_sub(1) - 1;
+                let dock_area = Rect::new(dock_x-1, dock_y, dock_w, dock_h);
+            f.render_widget(FishermanDock { width: dock_w }, dock_area);
+                // Render fisherman in its own area (separate from the dock widget).
+                // Place the fisher area directly above the plank row so the head
+                // appears above the dock. Use a small height for the fisher widget.
+                let fisher_h = 9u16;
+                let fisher_y = dock_area.y-2; // dock_area.y was chosen as one row above plank
+                let fisher_area = Rect::new(dock_x-(dock_w-1), fisher_y, dock_w, fisher_h);
+                let fisher = Fisherman { offset_from_right: 1, kick: fisherman_kick };
+                f.render_widget(fisher, fisher_area);
+
+            // Render fish grouping border and each fish entity on top if available
+            let (lanes, lane_height, base_y) = fish::compute_fish_layout(size);
+            let fish_area_height = lane_height.saturating_mul(lanes) - 2;
+            let fish_group_area = Rect::new(size.x, base_y, size.width, fish_area_height);
+            let fish_block = Block::default().title("Fish").borders(Borders::ALL);
+            f.render_widget(fish_block, fish_group_area);
+
+            for fish in fishes.iter() {
+                let frames_vec = if fish.facing_right {
+                    &fish_right
+                } else if !fish_left.is_empty() {
+                    &fish_left
+                } else {
+                    &fish_right
+                };
+                if frames_vec.is_empty() {
+                    continue;
+                }
+
+                let frame_idx = ((elapsed.as_millis() / fish.frame_duration.as_millis()) as usize) % frames_vec.len();
+                let fish_text = frames_vec[frame_idx].clone();
+
+                // compute placement by lane (centralized in fish module)
+                let (_lanes, lane_height, base_y) = fish::compute_fish_layout(size);
+                let lane_y = base_y.saturating_add(fish.lane as u16 * lane_height) + 2;
+
+                let fish_x = fish.x as u16;
+                let fish_h = lane_height.min(size.height.saturating_sub(1));
+                let fish_area = ratatui::layout::Rect::new(fish_x, lane_y, size.width.saturating_sub(fish_x), fish_h);
+                let fish_par = Paragraph::new(fish_text).block(Block::default());
+                f.render_widget(fish_par, fish_area);
+            }
+
+            // Now render the border (and optionally the "Got one!" message) on top
+            if elapsed >= load_time {
+                let done_par = Paragraph::new(Text::from("Got one!")).block(
+                    Block::default().title("Fisherman").borders(Borders::ALL),
+                );
+                f.render_widget(done_par, size);
+            } else {
+                let block = Block::default().title("Fisherman").borders(Borders::ALL);
+                f.render_widget(block, size);
+            }
         })?;
 
         // Exit when fish caught or user presses 'q'
