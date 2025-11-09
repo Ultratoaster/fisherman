@@ -159,7 +159,12 @@ pub fn spawn_fishes<R: rand::Rng + ?Sized>(
                 has_right
             };
             
-            let wrap = rng.gen_bool(0.5);
+            // Fish with only one direction must wrap, otherwise they'd get stuck at edges
+            let wrap = if has_left && has_right {
+                rng.gen_bool(0.5)
+            } else {
+                true
+            };
             let spawn_delay_ms = rng.gen_range(0..MAX_SPAWN_DELAY_MS);
             let x = compute_spawn_x(rng, dir_right, screen_width);
             

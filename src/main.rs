@@ -7,6 +7,7 @@ mod ocean;
 mod widgets;
 mod fisherman;
 mod fish;
+mod fishing_line;
 
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -26,6 +27,7 @@ use fish::{Fish, spawn_fishes};
 use ocean::Ocean;
 use widgets::FishermanDock;
 use fisherman::Fisherman;
+use fishing_line::{FishingLine, FishingState};
 use csv_frames::load_frames_from_dir;
 
 // Layout constants
@@ -111,6 +113,14 @@ fn main() -> Result<(), io::Error> {
     let mut fisherman_kick = false;
     let mut last_kick_toggle = Instant::now();
     let kick_interval = Duration::from_millis(400);
+    
+    // Fishing line state
+    let mut fishing_state = FishingState::Idle;
+    let mut cast_charge_start: Option<Instant> = None;
+    let max_cast_time = Duration::from_secs(2);
+    let mut cast_animation_start: Option<Instant> = None;
+    let cast_animation_duration = Duration::from_millis(800);
+    
     loop {
         let now = Instant::now();
         let dt = now.duration_since(last_update);
@@ -120,6 +130,40 @@ fn main() -> Result<(), io::Error> {
         if now.duration_since(last_kick_toggle) >= kick_interval {
             fisherman_kick = !fisherman_kick;
             last_kick_toggle = now;
+        }
+
+        // Update casting animation
+        if let Some(anim_start) = cast_animation_start {
+            let anim_elapsed = now.duration_since(anim_start);
+            if anim_elapsed < cast_animation_duration {
+                // Still animating cast
+                if let FishingState::Casting { start_x, start_y, target_x, progress: _ } = fishing_state {
+                    let new_progress = anim_elapsed.as_secs_f32() / cast_animation_duration.as_secs_f32();
+                    fishing_state = FishingState::Casting {
+                        start_x,
+                        start_y,
+                        target_x,
+                        progress: new_progress,
+                    };
+                }
+            } else {
+                // Animation complete, land the hook
+                if let FishingState::Casting { target_x, start_y, .. } = fishing_state {
+                    fishing_state = FishingState::Landed {
+                        landing_x: target_x,
+                        landing_y: start_y,
+                        depth: 0,
+                    };
+                }
+                cast_animation_start = None;
+            }
+        }
+
+        // Update charge meter
+        if let Some(charge_start) = cast_charge_start {
+            let charge_elapsed = now.duration_since(charge_start);
+            let power = (charge_elapsed.as_secs_f32() / max_cast_time.as_secs_f32()).min(1.0);
+            fishing_state = FishingState::Charging { power };
         }
 
         if !fishes.is_empty() {
@@ -145,14 +189,12 @@ fn main() -> Result<(), io::Error> {
                             fish.x = wrap_pos;
                         } else {
                             fish.x = clamp_pos;
-                            // Check if this fish can bounce (has both directions, none implemented yet.)
+                            // Check if this fish can bounce (has both directions)
                             let (species_has_right, species_has_left) = 
                                 fish::species_has_directions(&per_species, fish.species);
                             if species_has_left && species_has_right {
                                 fish.vx = -fish.vx;
                                 fish.facing_right = !fish.facing_right;
-                            } else {
-                                fish.vx = 0.0;
                             }
                         }
                     }
@@ -178,6 +220,12 @@ fn main() -> Result<(), io::Error> {
             let fisher_area = Rect::new(dock_x - (DOCK_WIDTH - 1), fisher_y, DOCK_WIDTH, FISHERMAN_HEIGHT);
             let fisher = Fisherman { offset_from_right: 1, kick: fisherman_kick };
             f.render_widget(fisher, fisher_area);
+
+            // Render fishing line
+            let rod_tip_x = dock_x - 1 - 4 - 1; // rod is 4 chars long, adjusted one left
+            let rod_tip_y = fisher_y.saturating_sub(4).saturating_add(2).saturating_sub(1); // rod extends upward, adjusted one up
+            let fishing_line = FishingLine::new(rod_tip_x, rod_tip_y).with_state(fishing_state);
+            f.render_widget(fishing_line, size);
 
             // Compute fish area and render fish
             let (fish_group_area, _) = compute_fish_area(size, ocean_area.y);
@@ -206,8 +254,77 @@ fn main() -> Result<(), io::Error> {
         }
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('q') {
-                    break;
+                match key.code {
+                    KeyCode::Char('q') => break,
+                    KeyCode::Char(' ') => {
+                        // Space bar - charge/release cast
+                        match key.kind {
+                            event::KeyEventKind::Press => {
+                                if matches!(fishing_state, FishingState::Idle) {
+                                    // Start charging
+                                    cast_charge_start = Some(now);
+                                }
+                            }
+                            event::KeyEventKind::Release => {
+                                // Release cast
+                                if let FishingState::Charging { power } = fishing_state {
+                                    if let Ok(size) = terminal.size() {
+                                        let screen_width = size.width;
+                                        let ocean_area = compute_ocean_area(Rect::new(0, 0, size.width, size.height));
+                                        let rod_tip_x = screen_width.saturating_sub(DOCK_WIDTH)
+                                            .saturating_sub(1)
+                                            .saturating_sub(4)
+                                            .saturating_sub(1);
+                                        let dock_y = ocean_area.y.saturating_sub(2);
+                                        let _rod_tip_y = dock_y.saturating_sub(2).saturating_sub(4).saturating_add(2).saturating_sub(1);
+                                        
+                                        // Calculate target position based on power
+                                        let max_distance = (screen_width as f32 * 0.7) as u16;
+                                        let cast_distance = (max_distance as f32 * power) as u16;
+                                        let target_x = rod_tip_x.saturating_sub(cast_distance.max(10));
+                                        let landing_y = ocean_area.y; // Land at top of ocean
+                                        
+                                        fishing_state = FishingState::Casting {
+                                            start_x: rod_tip_x,
+                                            start_y: landing_y,
+                                            target_x,
+                                            progress: 0.0,
+                                        };
+                                        cast_animation_start = Some(now);
+                                    }
+                                    cast_charge_start = None;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    KeyCode::Down => {
+                        // Extend hook depth when landed
+                        if let FishingState::Landed { landing_x, landing_y, depth } = fishing_state {
+                            let max_depth = terminal.size().map(|s| s.height.saturating_sub(landing_y)).unwrap_or(30);
+                            fishing_state = FishingState::Landed {
+                                landing_x,
+                                landing_y,
+                                depth: depth.saturating_add(1).min(max_depth),
+                            };
+                        }
+                    }
+                    KeyCode::Up => {
+                        // Reduce hook depth when landed (or reel in)
+                        if let FishingState::Landed { landing_x, landing_y, depth } = fishing_state {
+                            if depth == 0 {
+                                // Fully reeled in, return to idle
+                                fishing_state = FishingState::Idle;
+                            } else {
+                                fishing_state = FishingState::Landed {
+                                    landing_x,
+                                    landing_y,
+                                    depth: depth.saturating_sub(1),
+                                };
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

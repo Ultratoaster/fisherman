@@ -72,23 +72,5 @@ impl Widget for Fisherman {
                 );
             }
         }
-
-        let line_length = 15;
-        for i in 0..line_length + rod_length {
-            buf.set_string(
-                fx - (1 + rod_length),
-                (head_y - rod_length + 1) + i,
-                "|",
-                Style::default().fg(Color::Rgb(200, 200, 120)),
-            );
-            if i == (line_length + rod_length - 1) {
-                buf.set_string(
-                    fx - (1 + rod_length),
-                    (head_y - rod_length + 1) + i,
-                    "⌡",
-                    Style::default().fg(Color::Rgb(150, 150, 255)),
-                );
-            }
-        }
     }
 }
