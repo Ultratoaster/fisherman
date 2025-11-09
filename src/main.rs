@@ -20,7 +20,7 @@ use ratatui::{
 };
 use ratatui::text::Text;
 use ratatui::layout::Rect;
-use rand::Rng;
+use rand;
 
 use fish::{Fish, spawn_fishes};
 use ocean::Ocean;
@@ -29,35 +29,39 @@ use fisherman::Fisherman;
 use csv_frames::load_frames_from_dir;
 
 fn main() -> Result<(), io::Error> {
-    // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Load optional fish frames from a subfolder. These should be small animations
-    // (e.g. 1-5 lines tall) placed in `src/fisherman_frames/fish/`.
-    let fish_frames = match load_frames_from_dir("src/fisherman_frames/fish") {
-        Ok(f) if !f.is_empty() => f,
-        _ => Vec::new(),
+    let mut per_species = match csv_frames::load_all_fish_frames("src/fish") {
+        Ok(v) => v,
+        Err(_) => Vec::new(),
     };
+    if per_species.is_empty() {
+        let fallback = load_frames_from_dir("src/fish").unwrap_or_else(|_| Vec::new());
+        let fr = load_frames_from_dir("src/fish/right").unwrap_or_else(|_| fallback.clone());
+        let fl = load_frames_from_dir("src/fish/left").unwrap_or_else(|_| Vec::new());
+        per_species.push((fr, fl));
+    }
 
-    // Also try to load directional frames if user places them separately
-    let fish_right = load_frames_from_dir("src/fisherman_frames/fish/right").unwrap_or_else(|_| fish_frames.clone());
-    let fish_left = load_frames_from_dir("src/fisherman_frames/fish/left").unwrap_or_else(|_| Vec::new());
-
-    // fish lanes and entities: use helper from `fish` module
     let mut rng = rand::thread_rng();
-    let mut fishes: Vec<Fish> = spawn_fishes(&mut rng);
 
-    // Simulated "loading" duration and per-frame display time
+    let has_left = per_species.iter().any(|(_, l)| !l.is_empty());
+    let has_right = per_species.iter().any(|(r, _)| !r.is_empty());
+    let species_count = per_species.len();
+
+    let screen_width = match terminal.size() {
+        Ok(s) => s.width as f32,
+        Err(_) => 80.0,
+    };
+    let mut fishes: Vec<Fish> = spawn_fishes(&mut rng, has_left, has_right, species_count, screen_width);
+
     let start = Instant::now();
-    let load_time = Duration::from_secs(5);
-    // fish layout helper used below
+    let load_time = Duration::from_secs(30);
 
     let mut last_update = Instant::now();
-    // Fisherman leg-kick state
     let mut fisherman_kick = false;
     let mut last_kick_toggle = Instant::now();
     let kick_interval = Duration::from_millis(400);
@@ -67,38 +71,42 @@ fn main() -> Result<(), io::Error> {
         last_update = now;
         let elapsed = start.elapsed();
 
-        // toggle fisherman kick phase at fixed interval
         if now.duration_since(last_kick_toggle) >= kick_interval {
             fisherman_kick = !fisherman_kick;
             last_kick_toggle = now;
         }
 
-        // update fish positions using current terminal size
         if !fishes.is_empty() {
             if let Ok(size) = terminal.size() {
                 let width = size.width as f32;
                 for fish in fishes.iter_mut() {
-                    fish.x += fish.vx * dt.as_secs_f32();
-                    // random chance to turn around
-                    if rng.gen_bool((dt.as_secs_f32() * 0.05).min(1.0) as f64) {
-                        fish.vx = -fish.vx;
-                        fish.facing_right = !fish.facing_right;
+                    if elapsed.as_millis() < fish.spawn_delay_ms as u128 {
+                        continue;
                     }
+                    fish.x += fish.vx * dt.as_secs_f32();
                     if fish.x > width {
                         if fish.wrap {
                             fish.x = 0.0;
                         } else {
                             fish.x = width.min(fish.x);
-                            fish.vx = -fish.vx;
-                            fish.facing_right = !fish.facing_right;
+                            if has_left && has_right {
+                                fish.vx = -fish.vx;
+                                fish.facing_right = !fish.facing_right;
+                            } else {
+                                fish.vx = 0.0;
+                            }
                         }
                     } else if fish.x < 0.0 {
                         if fish.wrap {
                             fish.x = width;
                         } else {
                             fish.x = 0.0;
-                            fish.vx = -fish.vx;
-                            fish.facing_right = !fish.facing_right;
+                            if has_left && has_right {
+                                fish.vx = -fish.vx;
+                                fish.facing_right = !fish.facing_right;
+                            } else {
+                                fish.vx = 0.0;
+                            }
                         }
                     }
                 }
@@ -107,10 +115,8 @@ fn main() -> Result<(), io::Error> {
 
         terminal.draw(|f| {
             let size = f.area();
-
-            // Render ocean surface starting 20 rows from the top (clamped).
             let ocean_h = 4u16;
-            let desired_top: u16 = 20;
+            let desired_top: u16 = 20; //distance from top of terminal
             let top = if size.height > desired_top + ocean_h {
                 desired_top
             } else if size.height > ocean_h {
@@ -120,62 +126,41 @@ fn main() -> Result<(), io::Error> {
             };
             let ocean_area = Rect::new(size.x+1, top, size.width-2, ocean_h);
             f.render_widget(Ocean, ocean_area);
-
-            // Render fisherman/dock anchored at the ocean surface and right edge
+            // Render dock
             let dock_w = 16u16;
             let dock_h = 4u16;
-            // Anchor the dock so its plank row lines up with the ocean surface (ocean_area.y)
-            // and the dock extends left from the right edge of the terminal area.
                 let dock_x = size.x.saturating_add(size.width.saturating_sub(dock_w));
-                // Give the dock area one row of space above the plank so the fisherman
-                // (which is drawn one row above the plank) can be rendered inside the
-                // widget's area. Clamp at the top of the screen.
                 let dock_y = ocean_area.y.saturating_sub(1) - 1;
                 let dock_area = Rect::new(dock_x-1, dock_y, dock_w, dock_h);
             f.render_widget(FishermanDock { width: dock_w }, dock_area);
-                // Render fisherman in its own area (separate from the dock widget).
-                // Place the fisher area directly above the plank row so the head
-                // appears above the dock. Use a small height for the fisher widget.
+                // Render fisherman
                 let fisher_h = 9u16;
                 let fisher_y = dock_area.y-2; // dock_area.y was chosen as one row above plank
                 let fisher_area = Rect::new(dock_x-(dock_w-1), fisher_y, dock_w, fisher_h);
                 let fisher = Fisherman { offset_from_right: 1, kick: fisherman_kick };
                 f.render_widget(fisher, fisher_area);
 
-            // Render fish grouping border and each fish entity on top if available
-            let (lanes, lane_height, base_y) = fish::compute_fish_layout(size);
+            // Compute fish layout and rendering operations
+            let (lanes, lane_height, _base_y) = fish::compute_fish_layout(size);
             let fish_area_height = lane_height.saturating_mul(lanes) - 2;
+            let desired_top = ocean_area.y.saturating_add(5);
+            let base_y = if desired_top.saturating_add(fish_area_height) <= size.height {
+                desired_top
+            } else if size.height > fish_area_height {
+                size.height.saturating_sub(fish_area_height)
+            } else {
+                0
+            };
             let fish_group_area = Rect::new(size.x, base_y, size.width, fish_area_height);
-            let fish_block = Block::default().title("Fish").borders(Borders::ALL);
-            f.render_widget(fish_block, fish_group_area);
 
-            for fish in fishes.iter() {
-                let frames_vec = if fish.facing_right {
-                    &fish_right
-                } else if !fish_left.is_empty() {
-                    &fish_left
-                } else {
-                    &fish_right
-                };
-                if frames_vec.is_empty() {
-                    continue;
-                }
-
-                let frame_idx = ((elapsed.as_millis() / fish.frame_duration.as_millis()) as usize) % frames_vec.len();
-                let fish_text = frames_vec[frame_idx].clone();
-
-                // compute placement by lane (centralized in fish module)
-                let (_lanes, lane_height, base_y) = fish::compute_fish_layout(size);
-                let lane_y = base_y.saturating_add(fish.lane as u16 * lane_height) + 2;
-
-                let fish_x = fish.x as u16;
-                let fish_h = lane_height.min(size.height.saturating_sub(1));
-                let fish_area = ratatui::layout::Rect::new(fish_x, lane_y, size.width.saturating_sub(fish_x), fish_h);
-                let fish_par = Paragraph::new(fish_text).block(Block::default());
-                f.render_widget(fish_par, fish_area);
+            // Ask the fish module to compute rendering operations for fish
+            let ops = fish::compute_fish_render_ops(&fishes, fish_group_area, &per_species, elapsed);
+            for (rect, text) in ops.into_iter() {
+                let fish_par = Paragraph::new(text).block(Block::default());
+                f.render_widget(fish_par, rect);
             }
 
-            // Now render the border (and optionally the "Got one!" message) on top
+            // If loading complete, show "Got one!" message in fisherman area
             if elapsed >= load_time {
                 let done_par = Paragraph::new(Text::from("Got one!")).block(
                     Block::default().title("Fisherman").borders(Borders::ALL),

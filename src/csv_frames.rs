@@ -26,14 +26,13 @@ struct CellRow {
     #[serde(rename = "Y")] pub y: u32,
     #[serde(rename = "ASCII")] pub ascii: String,
     #[serde(rename = "Foreground", deserialize_with = "de_hex_to_color")] pub foreground: Color,
-    #[serde(rename = "Background", deserialize_with = "de_hex_to_color")] pub background: Color,
 }
 
 pub fn load_csv_frame(path: &str) -> io::Result<Text<'static>> {
     let content = fs::read_to_string(path)?;
     let mut reader = csv::Reader::from_reader(content.as_bytes());
 
-    let mut cells: HashMap<(u32, u32), (char, (u8, u8, u8), (u8, u8, u8))> = HashMap::new();
+    let mut cells: HashMap<(u32, u32), (char, (u8, u8, u8))> = HashMap::new();
     let mut max_x = 0;
     let mut max_y = 0;
 
@@ -47,26 +46,21 @@ pub fn load_csv_frame(path: &str) -> io::Result<Text<'static>> {
             Color::Rgb(r, g, b) => (r, g, b),
             _ => (255, 255, 255),
         };
-        let bg_rgb = match row.background {
-            Color::Rgb(r, g, b) => (r, g, b),
-            _ => (0, 0, 0),
-        };
 
         max_x = max_x.max(x);
         max_y = max_y.max(y);
-        cells.insert((x, y), (ch, fg_rgb, bg_rgb));
+        cells.insert((x, y), (ch, fg_rgb));
     }
 
     let mut rows: Vec<Line> = Vec::with_capacity((max_y as usize) + 1);
     for y in 0..=max_y {
         let mut span_row: Vec<Span> = Vec::with_capacity((max_x as usize) + 1);
         for x in 0..=max_x {
-            if let Some((ch, fg, bg)) = cells.get(&(x, y)) {
+            if let Some((ch, fg)) = cells.get(&(x, y)) {
                 let styled = Span::styled(
                     ch.to_string(),
                     ratatui::style::Style::default()
                         .fg(Color::Rgb(fg.0, fg.1, fg.2))
-                        .bg(Color::Rgb(bg.0, bg.1, bg.2)),
                 );
                 span_row.push(styled);
             } else {
@@ -98,4 +92,61 @@ pub fn load_frames_from_dir(dir: &str) -> io::Result<Vec<Text<'static>>> {
     }
 
     Ok(frames)
+}
+
+/// Per-species pair: (right-facing frames, left-facing frames)
+pub type SpeciesFrames = (Vec<Text<'static>>, Vec<Text<'static>>);
+
+/// Load fish frames from a base fish directory. The expected layout is:
+///
+/// src/fish/
+///   species1/
+///     left/*.csv
+///     right/*.csv
+///   species2/
+///     left/*.csv
+///     right/*.csv
+///
+/// This returns two vectors: (all_right_frames, all_left_frames) by concatenating
+/// frames found under each species' right/left subfolders. Missing folders are ignored.
+/// Return a vector containing per-species frame groups. Each element is a
+/// pair (right_frames, left_frames) for a single species directory found
+/// under `base_dir`.
+pub fn load_all_fish_frames(base_dir: &str) -> io::Result<Vec<SpeciesFrames>> {
+    let mut per_species: Vec<SpeciesFrames> = Vec::new();
+
+    let base = std::path::Path::new(base_dir);
+    if !base.exists() {
+        return Ok(per_species);
+    }
+
+    for entry in std::fs::read_dir(base)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() { continue; }
+
+        let mut right_frames: Vec<Text<'static>> = Vec::new();
+        let mut left_frames: Vec<Text<'static>> = Vec::new();
+
+        let right_dir = path.join("right");
+        if right_dir.exists() && right_dir.is_dir() {
+            if let Ok(mut v) = load_frames_from_dir(right_dir.to_string_lossy().as_ref()) {
+                right_frames.append(&mut v);
+            }
+        }
+
+        let left_dir = path.join("left");
+        if left_dir.exists() && left_dir.is_dir() {
+            if let Ok(mut v) = load_frames_from_dir(left_dir.to_string_lossy().as_ref()) {
+                left_frames.append(&mut v);
+            }
+        }
+
+        // Only add species if it has any frames at all.
+        if !right_frames.is_empty() || !left_frames.is_empty() {
+            per_species.push((right_frames, left_frames));
+        }
+    }
+
+    Ok(per_species)
 }
