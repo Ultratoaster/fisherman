@@ -521,6 +521,32 @@ fn main() -> Result<(), io::Error> {
                             event::KeyEventKind::Press => {
                                 if matches!(fishing_state, FishingState::Idle) {
                                     cast_charge_start = Some(now);
+                                } else if let FishingState::Charging { power } = fishing_state {
+                                    // On Linux, key release may not fire, so allow pressing space again to cast
+                                    if let Ok(size) = terminal.size() {
+                                        let screen_width = size.width;
+                                        let ocean_area = compute_ocean_area(Rect::new(0, 0, size.width, size.height));
+                                        let rod_tip_x = screen_width.saturating_sub(DOCK_WIDTH)
+                                            .saturating_sub(1)
+                                            .saturating_sub(4)
+                                            .saturating_sub(1);
+                                        let dock_y = ocean_area.y.saturating_sub(2);
+                                        let _rod_tip_y = dock_y.saturating_sub(2).saturating_sub(4).saturating_add(2).saturating_sub(1);
+                                        
+                                        let max_distance = (screen_width as f32 * 0.7) as u16;
+                                        let cast_distance = (max_distance as f32 * power) as u16;
+                                        let target_x = rod_tip_x.saturating_sub(cast_distance.max(10));
+                                        let landing_y = ocean_area.y;
+                                        
+                                        fishing_state = FishingState::Casting {
+                                            start_x: rod_tip_x,
+                                            start_y: landing_y,
+                                            target_x,
+                                            progress: 0.0,
+                                        };
+                                        cast_animation_start = Some(now);
+                                    }
+                                    cast_charge_start = None;
                                 }
                             }
                             event::KeyEventKind::Release => {
