@@ -9,6 +9,7 @@ mod fisherman;
 mod fish;
 mod fishing_line;
 mod fishing_game;
+mod stars;
 
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -79,6 +80,8 @@ fn main() -> Result<(), io::Error> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    let moon_sprite = csv_frames::load_csv_frame("moon.csv").ok();
+
     let species_list = match csv_frames::load_all_fish_species("src/fish") {
         Ok(v) => v,
         Err(_) => Vec::new(),
@@ -93,7 +96,6 @@ fn main() -> Result<(), io::Error> {
 
     let mut rng = rand::thread_rng();
 
-    // Get initial terminal size for spawn calculations
     let initial_size = match terminal.size() {
         Ok(s) => Rect::new(0, 0, s.width, s.height),
         Err(_) => Rect::new(0, 0, 80, 24),
@@ -109,23 +111,27 @@ fn main() -> Result<(), io::Error> {
     );
 
     let start = Instant::now();
-    let load_time = Duration::from_secs(30);
 
     let mut last_update = Instant::now();
     let mut fisherman_kick = false;
     let mut last_kick_toggle = Instant::now();
     let kick_interval = Duration::from_millis(400);
     
-    // Fishing line state
     let mut fishing_state = FishingState::Idle;
     let mut cast_charge_start: Option<Instant> = None;
     let max_cast_time = Duration::from_secs(2);
     let mut cast_animation_start: Option<Instant> = None;
     let cast_animation_duration = Duration::from_millis(800);
     
-    // Catching state
     let mut caught_fish: Option<fishing_game::CaughtFish> = None;
     let mut catch_message_shown_at: Option<Instant> = None;
+    
+    let mut signal_received: Option<(bool, String)> = None;
+    let mut signal_time: Option<Instant> = None;
+    
+    let sky_height = ocean_area.y;
+    let sky_area = Rect::new(0, 0, initial_size.width, sky_height);
+    let mut stars_widget = stars::Stars::new(&mut rng, sky_area, 0.02);
     
     loop {
         let now = Instant::now();
@@ -137,12 +143,12 @@ fn main() -> Result<(), io::Error> {
             fisherman_kick = !fisherman_kick;
             last_kick_toggle = now;
         }
+        
+        stars_widget.update(elapsed);
 
-        // Update casting animation
         if let Some(anim_start) = cast_animation_start {
             let anim_elapsed = now.duration_since(anim_start);
             if anim_elapsed < cast_animation_duration {
-                // Still animating cast
                 if let FishingState::Casting { start_x, start_y, target_x, progress: _ } = fishing_state {
                     let new_progress = anim_elapsed.as_secs_f32() / cast_animation_duration.as_secs_f32();
                     fishing_state = FishingState::Casting {
@@ -153,7 +159,6 @@ fn main() -> Result<(), io::Error> {
                     };
                 }
             } else {
-                // Animation complete, land the hook
                 if let FishingState::Casting { target_x, start_y, .. } = fishing_state {
                     fishing_state = FishingState::Landed {
                         landing_x: target_x,
@@ -165,7 +170,6 @@ fn main() -> Result<(), io::Error> {
             }
         }
 
-        // Update charge meter
         if let Some(charge_start) = cast_charge_start {
             let charge_elapsed = now.duration_since(charge_start);
             let power = (charge_elapsed.as_secs_f32() / max_cast_time.as_secs_f32()).min(1.0);
@@ -181,9 +185,8 @@ fn main() -> Result<(), io::Error> {
                     }
                     fish.x += fish.vx * dt.as_secs_f32();
                     
-                    // Handle edge wrapping/bouncing
                     let out_of_bounds = if fish.x > width {
-                        Some((width, 0.0)) // (clamp_value, wrap_value)
+                        Some((width, 0.0))
                     } else if fish.x < 0.0 {
                         Some((0.0, width))
                     } else {
@@ -195,7 +198,6 @@ fn main() -> Result<(), io::Error> {
                             fish.x = wrap_pos;
                         } else {
                             fish.x = clamp_pos;
-                            // Check if this fish can bounce (has both directions)
                             let (species_has_right, species_has_left) = 
                                 fish::species_has_directions(&per_species, fish.species);
                             if species_has_left && species_has_right {
@@ -206,7 +208,6 @@ fn main() -> Result<(), io::Error> {
                     }
                 }
                 
-                // Check for fish catching when hook is in the water
                 if let FishingState::Landed { landing_x, landing_y, depth } = fishing_state {
                     let hook_x = landing_x;
                     let hook_y = landing_y.saturating_add(depth);
@@ -234,10 +235,8 @@ fn main() -> Result<(), io::Error> {
                             caught_fish = Some(fishing_game::CaughtFish::new(species_name, fish.size));
                             catch_message_shown_at = Some(now);
                             
-                            // Remove the caught fish
                             fishes.remove(i);
                             
-                            // Reel in the line
                             fishing_state = FishingState::Idle;
                             break;
                         }
@@ -249,29 +248,45 @@ fn main() -> Result<(), io::Error> {
         terminal.draw(|f| {
             let size = f.area();
             
-            // Render ocean
             let ocean_area = compute_ocean_area(size);
             f.render_widget(Ocean, ocean_area);
             
-            // Render dock
+            let sky_area = Rect::new(0, 0, size.width, ocean_area.y);
+            f.render_widget(stars_widget.clone(), sky_area);
+            
+            if let Some(ref moon) = moon_sprite {
+                let moon_x = 8;
+                let moon_y = 3;
+                let moon_area = Rect::new(moon_x, moon_y, 10, 7);
+                let moon_par = Paragraph::new(moon.clone()).block(Block::default());
+                f.render_widget(moon_par, moon_area);
+            }
+            
             let dock_x = size.x.saturating_add(size.width.saturating_sub(DOCK_WIDTH));
             let dock_y = ocean_area.y.saturating_sub(2);
             let dock_area = Rect::new(dock_x - 1, dock_y, DOCK_WIDTH, DOCK_HEIGHT);
             f.render_widget(FishermanDock { width: DOCK_WIDTH }, dock_area);
             
-            // Render fisherman
             let fisher_y = dock_area.y - 2;
             let fisher_area = Rect::new(dock_x - (DOCK_WIDTH - 1), fisher_y, DOCK_WIDTH, FISHERMAN_HEIGHT);
             let fisher = Fisherman { offset_from_right: 1, kick: fisherman_kick };
             f.render_widget(fisher, fisher_area);
+            
+            if signal_received.is_some() {
+                let exclaim_x = dock_x - (DOCK_WIDTH / 2);
+                let exclaim_y = fisher_y.saturating_sub(1);
+                if exclaim_y < size.height {
+                    let exclaim_style = ratatui::style::Style::default()
+                        .fg(ratatui::style::Color::Yellow);
+                    f.buffer_mut().set_string(exclaim_x, exclaim_y, "!", exclaim_style);
+                }
+            }
 
-            // Render fishing line
-            let rod_tip_x = dock_x - 1 - 4 - 1; // rod is 4 chars long, adjusted one left
-            let rod_tip_y = fisher_y.saturating_sub(4).saturating_add(2).saturating_sub(1); // rod extends upward, adjusted one up
+            let rod_tip_x = dock_x - 1 - 4 - 1;
+            let rod_tip_y = fisher_y.saturating_sub(4).saturating_add(2).saturating_sub(1);
             let fishing_line = FishingLine::new(rod_tip_x, rod_tip_y).with_state(fishing_state);
             f.render_widget(fishing_line, size);
 
-            // Compute fish area and render fish
             let (fish_group_area, _) = compute_fish_area(size, ocean_area.y);
             let ops = fish::compute_fish_render_ops(&fishes, fish_group_area, &per_species, elapsed);
             for (rect, text) in ops.into_iter() {
@@ -279,13 +294,7 @@ fn main() -> Result<(), io::Error> {
                 f.render_widget(fish_par, rect);
             }
 
-            // If loading complete, show "Got one!" message in fisherman area
-            if elapsed >= load_time {
-                let done_par = Paragraph::new(Text::from("Got one!")).block(
-                    Block::default().title("Fisherman").borders(Borders::ALL),
-                );
-                f.render_widget(done_par, size);
-            } else if let Some(ref caught) = caught_fish {
+            if let Some(ref caught) = caught_fish {
                 // Show caught fish message
                 let message = caught.format_catch();
                 let catch_par = Paragraph::new(Text::from(message))
@@ -303,9 +312,28 @@ fn main() -> Result<(), io::Error> {
                 let block = Block::default().title("Fisherman").borders(Borders::ALL);
                 f.render_widget(block, size);
             }
+            
+            if let Some((is_success, ref message)) = signal_received {
+                let color = if is_success {
+                    ratatui::style::Color::Green
+                } else {
+                    ratatui::style::Color::Red
+                };
+                let signal_par = Paragraph::new(Text::from(message.as_str()))
+                    .block(Block::default().borders(Borders::ALL))
+                    .style(ratatui::style::Style::default().fg(color))
+                    .alignment(ratatui::layout::Alignment::Center);
+                
+                // Position in the upper part of the sky
+                let msg_width = message.len().min(60) as u16 + 4;
+                let msg_height = 3;
+                let msg_x = size.width.saturating_sub(msg_width) / 2;
+                let msg_y = ocean_area.y / 3; // Upper third of sky
+                let msg_area = Rect::new(msg_x, msg_y, msg_width, msg_height);
+                f.render_widget(signal_par, msg_area);
+            }
         })?;
 
-        // Clear caught fish message after 3 seconds
         if let Some(shown_at) = catch_message_shown_at {
             if now.duration_since(shown_at) > Duration::from_secs(3) {
                 caught_fish = None;
@@ -313,9 +341,8 @@ fn main() -> Result<(), io::Error> {
             }
         }
 
-        // Exit when fish caught or user presses 'q'
-        if elapsed >= load_time {
-            thread::sleep(Duration::from_secs(2));
+        if signal_received.is_some() {
+            thread::sleep(Duration::from_secs(3));
             break;
         }
         if event::poll(Duration::from_millis(50))? {
@@ -323,16 +350,13 @@ fn main() -> Result<(), io::Error> {
                 match key.code {
                     KeyCode::Char('q') => break,
                     KeyCode::Char(' ') => {
-                        // Space bar - charge/release cast
                         match key.kind {
                             event::KeyEventKind::Press => {
                                 if matches!(fishing_state, FishingState::Idle) {
-                                    // Start charging
                                     cast_charge_start = Some(now);
                                 }
                             }
                             event::KeyEventKind::Release => {
-                                // Release cast
                                 if let FishingState::Charging { power } = fishing_state {
                                     if let Ok(size) = terminal.size() {
                                         let screen_width = size.width;
@@ -344,11 +368,10 @@ fn main() -> Result<(), io::Error> {
                                         let dock_y = ocean_area.y.saturating_sub(2);
                                         let _rod_tip_y = dock_y.saturating_sub(2).saturating_sub(4).saturating_add(2).saturating_sub(1);
                                         
-                                        // Calculate target position based on power
                                         let max_distance = (screen_width as f32 * 0.7) as u16;
                                         let cast_distance = (max_distance as f32 * power) as u16;
                                         let target_x = rod_tip_x.saturating_sub(cast_distance.max(10));
-                                        let landing_y = ocean_area.y; // Land at top of ocean
+                                        let landing_y = ocean_area.y;
                                         
                                         fishing_state = FishingState::Casting {
                                             start_x: rod_tip_x,
@@ -365,7 +388,6 @@ fn main() -> Result<(), io::Error> {
                         }
                     }
                     KeyCode::Down => {
-                        // Extend hook depth when landed
                         if let FishingState::Landed { landing_x, landing_y, depth } = fishing_state {
                             let max_depth = terminal.size().map(|s| s.height.saturating_sub(landing_y)).unwrap_or(30);
                             fishing_state = FishingState::Landed {
@@ -376,10 +398,8 @@ fn main() -> Result<(), io::Error> {
                         }
                     }
                     KeyCode::Up => {
-                        // Reduce hook depth when landed (or reel in)
                         if let FishingState::Landed { landing_x, landing_y, depth } = fishing_state {
                             if depth == 0 {
-                                // Fully reeled in, return to idle
                                 fishing_state = FishingState::Idle;
                             } else {
                                 fishing_state = FishingState::Landed {
@@ -390,13 +410,20 @@ fn main() -> Result<(), io::Error> {
                             }
                         }
                     }
+                    KeyCode::Char('s') => {
+                        signal_received = Some((true, "Success! Task completed.".to_string()));
+                        signal_time = Some(now);
+                    }
+                    KeyCode::Char('f') => {
+                        signal_received = Some((false, "Failed! Please try again.".to_string()));
+                        signal_time = Some(now);
+                    }
                     _ => {}
                 }
             }
         }
     }
 
-    // Restore terminal
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;

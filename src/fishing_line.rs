@@ -59,12 +59,6 @@ impl FishingLine {
         }
     }
 
-    /// Set the line color
-    pub fn with_color(mut self, color: Color) -> Self {
-        self.color = color;
-        self
-    }
-
     /// Set the fishing state
     pub fn with_state(mut self, state: FishingState) -> Self {
         self.state = state;
