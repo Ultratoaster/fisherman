@@ -1,0 +1,17 @@
+=== FISH_DIR Debug ===
+FISH_DIR entries: 3
+Entry: "Goby"
+Entry: "Goldfish"
+Entry: "Shark"
+
+=== Processing species dir: "Goby" ===
+  Subdirs: ["Goby/left"]
+  Files: []
+
+=== Processing species dir: "Goldfish" ===
+  Subdirs: ["Goldfish/left"]
+  Files: []
+
+=== Processing species dir: "Shark" ===
+  Subdirs: ["Shark/right"]
+  Files: []

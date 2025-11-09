@@ -4,6 +4,10 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use ratatui::style::Color;
 use ratatui::text::{Span, Line, Text};
+use include_dir::{include_dir, Dir};
+
+static FISH_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/fish");
+static MOON_CSV: &str = include_str!("../moon.csv");
 
 fn de_hex_to_color<'de, D>(deserializer: D) -> Result<Color, D::Error>
 where
@@ -30,6 +34,50 @@ struct CellRow {
 
 pub fn load_csv_frame(path: &str) -> io::Result<Text<'static>> {
     let content = fs::read_to_string(path)?;
+    let mut reader = csv::Reader::from_reader(content.as_bytes());
+
+    let mut cells: HashMap<(u32, u32), (char, (u8, u8, u8))> = HashMap::new();
+    let mut max_x = 0;
+    let mut max_y = 0;
+
+    for result in reader.deserialize() {
+        let row: CellRow = result.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let x = row.x;
+        let y = row.y;
+        let ch = row.ascii.chars().next().unwrap_or(' ');
+
+        let fg_rgb = match row.foreground {
+            Color::Rgb(r, g, b) => (r, g, b),
+            _ => (255, 255, 255),
+        };
+
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+        cells.insert((x, y), (ch, fg_rgb));
+    }
+
+    let mut rows: Vec<Line> = Vec::with_capacity((max_y as usize) + 1);
+    for y in 0..=max_y {
+        let mut span_row: Vec<Span> = Vec::with_capacity((max_x as usize) + 1);
+        for x in 0..=max_x {
+            if let Some((ch, fg)) = cells.get(&(x, y)) {
+                let styled = Span::styled(
+                    ch.to_string(),
+                    ratatui::style::Style::default()
+                        .fg(Color::Rgb(fg.0, fg.1, fg.2))
+                );
+                span_row.push(styled);
+            } else {
+                span_row.push(Span::raw(" "));
+            }
+        }
+        rows.push(Line::from(span_row));
+    }
+
+    Ok(Text::from(rows))
+}
+
+pub fn load_csv_frame_from_string(content: &str) -> io::Result<Text<'static>> {
     let mut reader = csv::Reader::from_reader(content.as_bytes());
 
     let mut cells: HashMap<(u32, u32), (char, (u8, u8, u8))> = HashMap::new();
@@ -142,6 +190,63 @@ pub fn load_all_fish_species(base_dir: &str) -> io::Result<Vec<FishSpecies>> {
         if left_dir.exists() && left_dir.is_dir() {
             if let Ok(mut v) = load_frames_from_dir(left_dir.to_string_lossy().as_ref()) {
                 left_frames.append(&mut v);
+            }
+        }
+
+        if !right_frames.is_empty() || !left_frames.is_empty() {
+            per_species.push(FishSpecies {
+                name: species_name,
+                frames: (right_frames, left_frames),
+            });
+        }
+    }
+
+    Ok(per_species)
+}
+
+pub fn load_moon_embedded() -> io::Result<Text<'static>> {
+    load_csv_frame_from_string(MOON_CSV)
+}
+pub fn load_all_fish_species_embedded() -> io::Result<Vec<FishSpecies>> {
+    let mut per_species: Vec<FishSpecies> = Vec::new();
+
+    for species_dir in FISH_DIR.dirs() {
+        let species_name = species_dir.path()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Unknown")
+            .to_string();
+
+        let mut right_frames: Vec<Text<'static>> = Vec::new();
+        let mut left_frames: Vec<Text<'static>> = Vec::new();
+
+        for subdir in species_dir.dirs() {
+            let subdir_name = subdir.path().file_name().and_then(|n| n.to_str()).unwrap_or("");
+            
+            if subdir_name == "right" {
+                for file in subdir.files() {
+                    if let Some(ext) = file.path().extension() {
+                        if ext == "csv" {
+                            if let Ok(content) = std::str::from_utf8(file.contents()) {
+                                if let Ok(frame) = load_csv_frame_from_string(content) {
+                                    right_frames.push(frame);
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if subdir_name == "left" {
+                for file in subdir.files() {
+                    if let Some(ext) = file.path().extension() {
+                        if ext == "csv" {
+                            if let Ok(content) = std::str::from_utf8(file.contents()) {
+                                if let Ok(frame) = load_csv_frame_from_string(content) {
+                                    left_frames.push(frame);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

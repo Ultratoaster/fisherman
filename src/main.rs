@@ -80,11 +80,18 @@ fn main() -> Result<(), io::Error> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let moon_sprite = csv_frames::load_csv_frame("moon.csv").ok();
+    let moon_sprite = csv_frames::load_moon_embedded()
+        .ok()
+        .or_else(|| csv_frames::load_csv_frame("moon.csv").ok());
 
-    let species_list = match csv_frames::load_all_fish_species("src/fish") {
-        Ok(v) => v,
-        Err(_) => Vec::new(),
+    let species_list = match csv_frames::load_all_fish_species_embedded() {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            match csv_frames::load_all_fish_species("src/fish") {
+                Ok(v) => v,
+                Err(_) => Vec::new(),
+            }
+        }
     };
     let mut per_species: Vec<_> = species_list.iter().map(|s| s.frames.clone()).collect();
     if per_species.is_empty() {
@@ -136,6 +143,7 @@ fn main() -> Result<(), io::Error> {
     let sky_height = ocean_area.y;
     let sky_area = Rect::new(0, 0, initial_size.width, sky_height);
     let mut stars_widget = stars::Stars::new(&mut rng, sky_area, 0.02);
+    let mut last_window_size = (initial_size.width, initial_size.height);
     
     loop {
         let now = Instant::now();
@@ -370,8 +378,21 @@ fn main() -> Result<(), io::Error> {
             thread::sleep(Duration::from_secs(3));
             break;
         }
+        
         if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
+            match event::read()? {
+                Event::Resize(width, height) => {
+                    if (width, height) != last_window_size {
+                        last_window_size = (width, height);
+                        let new_size = Rect::new(0, 0, width, height);
+                        let ocean_area = compute_ocean_area(new_size);
+                        let sky_height = ocean_area.y;
+                        let sky_area = Rect::new(0, 0, width, sky_height);
+                        stars_widget = stars::Stars::new(&mut rng, sky_area, 0.02);
+                        stars_widget.update(elapsed);
+                    }
+                }
+                Event::Key(key) => {
                 match key.code {
                     KeyCode::Char('q') => break,
                     KeyCode::Char(' ') => {
@@ -447,6 +468,8 @@ fn main() -> Result<(), io::Error> {
                     }
                     _ => {}
                 }
+                }
+                _ => {}
             }
         }
     }
