@@ -28,6 +28,47 @@ use widgets::FishermanDock;
 use fisherman::Fisherman;
 use csv_frames::load_frames_from_dir;
 
+// Layout constants
+const OCEAN_HEIGHT: u16 = 4;
+const OCEAN_DESIRED_TOP: u16 = 20;
+const DOCK_WIDTH: u16 = 16;
+const DOCK_HEIGHT: u16 = 4;
+const FISHERMAN_HEIGHT: u16 = 9;
+const FISH_AREA_OFFSET_FROM_OCEAN: u16 = 5;
+
+/// Compute the ocean area placement given the terminal size
+fn compute_ocean_area(size: Rect) -> Rect {
+    let top = if size.height > OCEAN_DESIRED_TOP + OCEAN_HEIGHT {
+        OCEAN_DESIRED_TOP
+    } else if size.height > OCEAN_HEIGHT {
+        size.height.saturating_sub(OCEAN_HEIGHT)
+    } else {
+        0
+    };
+    Rect::new(size.x + 1, top, size.width - 2, OCEAN_HEIGHT)
+}
+
+/// Compute fish area placement and lane count based on ocean position
+fn compute_fish_area(size: Rect, ocean_y: u16) -> (Rect, u16) {
+    let lane_height = fish::FISH_HEIGHT;
+    let desired_top = ocean_y.saturating_add(FISH_AREA_OFFSET_FROM_OCEAN);
+    let available_height = if desired_top < size.height {
+        size.height.saturating_sub(desired_top)
+    } else {
+        0
+    };
+    let lanes = std::cmp::max(1u16, available_height / lane_height);
+    let fish_area_height = lane_height.saturating_mul(lanes).saturating_sub(2);
+    let base_y = if desired_top.saturating_add(fish_area_height) <= size.height {
+        desired_top
+    } else if size.height > fish_area_height {
+        size.height.saturating_sub(fish_area_height)
+    } else {
+        0
+    };
+    (Rect::new(size.x, base_y, size.width, fish_area_height), lanes)
+}
+
 fn main() -> Result<(), io::Error> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -48,15 +89,20 @@ fn main() -> Result<(), io::Error> {
 
     let mut rng = rand::thread_rng();
 
-    let has_left = per_species.iter().any(|(_, l)| !l.is_empty());
-    let has_right = per_species.iter().any(|(r, _)| !r.is_empty());
-    let species_count = per_species.len();
-
-    let screen_width = match terminal.size() {
-        Ok(s) => s.width as f32,
-        Err(_) => 80.0,
+    // Get initial terminal size for spawn calculations
+    let initial_size = match terminal.size() {
+        Ok(s) => Rect::new(0, 0, s.width, s.height),
+        Err(_) => Rect::new(0, 0, 80, 24),
     };
-    let mut fishes: Vec<Fish> = spawn_fishes(&mut rng, has_left, has_right, species_count, screen_width);
+    let ocean_area = compute_ocean_area(initial_size);
+    let (_, lanes) = compute_fish_area(initial_size, ocean_area.y);
+
+    let mut fishes: Vec<Fish> = spawn_fishes(
+        &mut rng,
+        &per_species,
+        initial_size.width as f32,
+        lanes as usize,
+    );
 
     let start = Instant::now();
     let load_time = Duration::from_secs(30);
@@ -84,24 +130,25 @@ fn main() -> Result<(), io::Error> {
                         continue;
                     }
                     fish.x += fish.vx * dt.as_secs_f32();
-                    if fish.x > width {
-                        if fish.wrap {
-                            fish.x = 0.0;
-                        } else {
-                            fish.x = width.min(fish.x);
-                            if has_left && has_right {
-                                fish.vx = -fish.vx;
-                                fish.facing_right = !fish.facing_right;
-                            } else {
-                                fish.vx = 0.0;
-                            }
-                        }
+                    
+                    // Handle edge wrapping/bouncing
+                    let out_of_bounds = if fish.x > width {
+                        Some((width, 0.0)) // (clamp_value, wrap_value)
                     } else if fish.x < 0.0 {
+                        Some((0.0, width))
+                    } else {
+                        None
+                    };
+                    
+                    if let Some((clamp_pos, wrap_pos)) = out_of_bounds {
                         if fish.wrap {
-                            fish.x = width;
+                            fish.x = wrap_pos;
                         } else {
-                            fish.x = 0.0;
-                            if has_left && has_right {
+                            fish.x = clamp_pos;
+                            // Check if this fish can bounce (has both directions, none implemented yet.)
+                            let (species_has_right, species_has_left) = 
+                                fish::species_has_directions(&per_species, fish.species);
+                            if species_has_left && species_has_right {
                                 fish.vx = -fish.vx;
                                 fish.facing_right = !fish.facing_right;
                             } else {
@@ -115,45 +162,25 @@ fn main() -> Result<(), io::Error> {
 
         terminal.draw(|f| {
             let size = f.area();
-            let ocean_h = 4u16;
-            let desired_top: u16 = 20; //distance from top of terminal
-            let top = if size.height > desired_top + ocean_h {
-                desired_top
-            } else if size.height > ocean_h {
-                size.height.saturating_sub(ocean_h)
-            } else {
-                0
-            };
-            let ocean_area = Rect::new(size.x+1, top, size.width-2, ocean_h);
+            
+            // Render ocean
+            let ocean_area = compute_ocean_area(size);
             f.render_widget(Ocean, ocean_area);
+            
             // Render dock
-            let dock_w = 16u16;
-            let dock_h = 4u16;
-                let dock_x = size.x.saturating_add(size.width.saturating_sub(dock_w));
-                let dock_y = ocean_area.y.saturating_sub(1) - 1;
-                let dock_area = Rect::new(dock_x-1, dock_y, dock_w, dock_h);
-            f.render_widget(FishermanDock { width: dock_w }, dock_area);
-                // Render fisherman
-                let fisher_h = 9u16;
-                let fisher_y = dock_area.y-2; // dock_area.y was chosen as one row above plank
-                let fisher_area = Rect::new(dock_x-(dock_w-1), fisher_y, dock_w, fisher_h);
-                let fisher = Fisherman { offset_from_right: 1, kick: fisherman_kick };
-                f.render_widget(fisher, fisher_area);
+            let dock_x = size.x.saturating_add(size.width.saturating_sub(DOCK_WIDTH));
+            let dock_y = ocean_area.y.saturating_sub(2);
+            let dock_area = Rect::new(dock_x - 1, dock_y, DOCK_WIDTH, DOCK_HEIGHT);
+            f.render_widget(FishermanDock { width: DOCK_WIDTH }, dock_area);
+            
+            // Render fisherman
+            let fisher_y = dock_area.y - 2;
+            let fisher_area = Rect::new(dock_x - (DOCK_WIDTH - 1), fisher_y, DOCK_WIDTH, FISHERMAN_HEIGHT);
+            let fisher = Fisherman { offset_from_right: 1, kick: fisherman_kick };
+            f.render_widget(fisher, fisher_area);
 
-            // Compute fish layout and rendering operations
-            let (lanes, lane_height, _base_y) = fish::compute_fish_layout(size);
-            let fish_area_height = lane_height.saturating_mul(lanes) - 2;
-            let desired_top = ocean_area.y.saturating_add(5);
-            let base_y = if desired_top.saturating_add(fish_area_height) <= size.height {
-                desired_top
-            } else if size.height > fish_area_height {
-                size.height.saturating_sub(fish_area_height)
-            } else {
-                0
-            };
-            let fish_group_area = Rect::new(size.x, base_y, size.width, fish_area_height);
-
-            // Ask the fish module to compute rendering operations for fish
+            // Compute fish area and render fish
+            let (fish_group_area, _) = compute_fish_area(size, ocean_area.y);
             let ops = fish::compute_fish_render_ops(&fishes, fish_group_area, &per_species, elapsed);
             for (rect, text) in ops.into_iter() {
                 let fish_par = Paragraph::new(text).block(Block::default());
