@@ -24,14 +24,14 @@ impl Widget for Fisherman {
             fx,
             head_y,
             "ö",
-            Style::default().fg(Color::Rgb(240, 200, 170)),
+            Style::default().fg(Color::Rgb(200, 200, 200)),
         );
         if head_y + 1 < area.y + area.height {
             buf.set_string(
                 fx,
                 head_y + 1,
                 "┤",
-                Style::default().fg(Color::Rgb(240, 200, 170)),
+                Style::default().fg(Color::Rgb(200, 200, 200)),
             );
         }
         if head_y + 2 < area.y + area.height {

@@ -117,6 +117,9 @@ fn main() -> Result<(), io::Error> {
     let mut last_kick_toggle = Instant::now();
     let kick_interval = Duration::from_millis(400);
     
+    let mut last_spawn_check = Instant::now();
+    let spawn_check_interval = Duration::from_secs(3);
+    
     let mut fishing_state = FishingState::Idle;
     let mut cast_charge_start: Option<Instant> = None;
     let max_cast_time = Duration::from_secs(2);
@@ -146,6 +149,27 @@ fn main() -> Result<(), io::Error> {
         }
         
         stars_widget.update(elapsed);
+
+        if now.duration_since(last_spawn_check) >= spawn_check_interval {
+            last_spawn_check = now;
+            if let Ok(size) = terminal.size() {
+                let ocean_area = compute_ocean_area(Rect::new(0, 0, size.width, size.height));
+                let (_, lanes) = compute_fish_area(Rect::new(0, 0, size.width, size.height), ocean_area.y);
+                
+                let current_fish_count = fishes.len();
+                let target_fish_count = lanes as usize;
+                
+                if current_fish_count < target_fish_count {
+                    let mut new_fish = spawn_fishes(
+                        &mut rng,
+                        &per_species,
+                        size.width as f32,
+                        lanes as usize,
+                    );
+                    fishes.append(&mut new_fish);
+                }
+            }
+        }
 
         if let Some(anim_start) = cast_animation_start {
             let anim_elapsed = now.duration_since(anim_start);
