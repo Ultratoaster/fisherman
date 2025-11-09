@@ -31,7 +31,7 @@ if sys.platform == "win32":
             return
         
         # Start the game in a new terminal
-        cmd = f'start "Fisherman Game" cmd /c "target\\release\\fisherman.exe --pipe {pipe_name}"'
+        cmd = f'start "Fisherman Game" cmd /c ".\\fisherman.exe --pipe {pipe_name}"'
         subprocess.Popen(cmd, shell=True)
         print("Game opened in separate window!")
         print("Waiting for game to connect to pipe...")
