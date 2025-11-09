@@ -1,6 +1,11 @@
 use std::io;
+use std::io::{BufRead, BufReader};
 use std::time::{Duration, Instant};
 use std::thread;
+use std::sync::{Arc, Mutex};
+use std::env;
+use std::path::PathBuf;
+use std::fs;
 
 mod csv_frames;
 mod ocean;
@@ -74,6 +79,60 @@ fn compute_fish_area(size: Rect, ocean_y: u16) -> (Rect, u16) {
 }
 
 fn main() -> Result<(), io::Error> {
+    let args: Vec<String> = env::args().collect();
+    let subprocess_mode = args.contains(&"--subprocess".to_string());
+    
+    // Check for --signal-file argument
+    let signal_file: Option<PathBuf> = args.iter()
+        .position(|arg| arg == "--signal-file")
+        .and_then(|i| args.get(i + 1))
+        .map(PathBuf::from);
+    
+    // Shared signal state
+    let signal_received: Arc<Mutex<Option<(bool, String)>>> = Arc::new(Mutex::new(None));
+    
+    // If in subprocess mode, spawn a thread to read from stdin
+    if subprocess_mode {
+        let signal_clone = Arc::clone(&signal_received);
+        thread::spawn(move || {
+            let stdin = io::stdin();
+            let reader = BufReader::new(stdin);
+            for line in reader.lines() {
+                if let Ok(line) = line {
+                    let line = line.trim();
+                    if let Some(msg) = line.strip_prefix("SUCCESS:") {
+                        *signal_clone.lock().unwrap() = Some((true, msg.to_string()));
+                    } else if let Some(msg) = line.strip_prefix("FAILURE:") {
+                        *signal_clone.lock().unwrap() = Some((false, msg.to_string()));
+                    }
+                }
+            }
+        });
+    }
+    
+    // If signal file is specified, poll it in a thread
+    if let Some(ref path) = signal_file {
+        let signal_clone = Arc::clone(&signal_received);
+        let path = path.clone();
+        thread::spawn(move || {
+            loop {
+                thread::sleep(Duration::from_millis(100));
+                if let Ok(content) = fs::read_to_string(&path) {
+                    let content = content.trim();
+                    if !content.is_empty() {
+                        if let Some(msg) = content.strip_prefix("SUCCESS:") {
+                            *signal_clone.lock().unwrap() = Some((true, msg.to_string()));
+                            let _ = fs::write(&path, ""); // Clear the file
+                        } else if let Some(msg) = content.strip_prefix("FAILURE:") {
+                            *signal_clone.lock().unwrap() = Some((false, msg.to_string()));
+                            let _ = fs::write(&path, ""); // Clear the file
+                        }
+                    }
+                }
+            }
+        });
+    }
+    
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -136,9 +195,7 @@ fn main() -> Result<(), io::Error> {
     let mut caught_fish: Option<fishing_game::CaughtFish> = None;
     let mut catch_message_shown_at: Option<Instant> = None;
     
-    let mut signal_received: Option<(bool, String)> = None;
-    // This will be for handling signals for success/failure
-    // let mut signal_time: Option<Instant> = None;
+    let mut local_signal: Option<(bool, String)> = None;
     
     let sky_height = ocean_area.y;
     let sky_area = Rect::new(0, 0, initial_size.width, sky_height);
@@ -150,6 +207,16 @@ fn main() -> Result<(), io::Error> {
         let dt = now.duration_since(last_update);
         last_update = now;
         let elapsed = start.elapsed();
+        
+        // Check for signals from subprocess stdin or signal file
+        if subprocess_mode || signal_file.is_some() {
+            if let Ok(mut sig) = signal_received.lock() {
+                if sig.is_some() {
+                    local_signal = sig.take();
+                    fisherman_kick = local_signal.as_ref().map(|(success, _)| *success).unwrap_or(false);
+                }
+            }
+        }
 
         if now.duration_since(last_kick_toggle) >= kick_interval {
             fisherman_kick = !fisherman_kick;
@@ -305,7 +372,7 @@ fn main() -> Result<(), io::Error> {
             let fisher = Fisherman { offset_from_right: 1, kick: fisherman_kick };
             f.render_widget(fisher, fisher_area);
             
-            if signal_received.is_some() {
+            if local_signal.is_some() {
                 let exclaim_x = dock_x - (DOCK_WIDTH / 2);
                 let exclaim_y = fisher_y.saturating_sub(1);
                 if exclaim_y < size.height {
@@ -346,7 +413,7 @@ fn main() -> Result<(), io::Error> {
                 f.render_widget(block, size);
             }
             
-            if let Some((is_success, ref message)) = signal_received {
+            if let Some((is_success, ref message)) = local_signal {
                 let color = if is_success {
                     ratatui::style::Color::Green
                 } else {
@@ -374,7 +441,7 @@ fn main() -> Result<(), io::Error> {
             }
         }
 
-        if signal_received.is_some() {
+        if local_signal.is_some() {
             thread::sleep(Duration::from_secs(3));
             break;
         }
@@ -457,14 +524,18 @@ fn main() -> Result<(), io::Error> {
                         }
                     }
                     KeyCode::Char('s') => {
-                        // The following lines will be used for signaling success
-                        signal_received = Some((true, "Success! Task completed.".to_string()));
-                        // signal_time = Some(now);
+                        // Test signal: SUCCESS (works when not using stdin)
+                        if !subprocess_mode && signal_file.is_none() {
+                            local_signal = Some((true, "Success! Task completed.".to_string()));
+                            fisherman_kick = true;
+                        }
                     }
                     KeyCode::Char('f') => {
-                        // The following lines will be used for signaling failure
-                        signal_received = Some((false, "Failed! Please try again.".to_string()));
-                        // signal_time = Some(now);
+                        // Test signal: FAILURE (works when not using stdin)
+                        if !subprocess_mode && signal_file.is_none() {
+                            local_signal = Some((false, "Failed! Please try again.".to_string()));
+                            fisherman_kick = false;
+                        }
                     }
                     _ => {}
                 }
