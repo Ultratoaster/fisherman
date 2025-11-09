@@ -18,26 +18,29 @@ def main():
     
     # Start the game in a new terminal window
     if sys.platform == "win32":
-        # Windows: Open in new cmd window
-        cmd = f'start "Fisherman Game" cmd /k "target\\release\\fisherman.exe --signal-file {signal_file}"'
+        # Windows: Use /c instead of /k to close window when game exits
+        cmd = f'start "Fisherman Game" cmd /c "target\\release\\fisherman.exe --signal-file {signal_file}"'
         subprocess.Popen(cmd, shell=True)
         print("Game opened in separate window!")
+        print("(Window will close automatically when game exits)")
         
     elif sys.platform == "darwin":
-        # macOS
+        # macOS: Terminal.app closes automatically when process exits
         subprocess.Popen([
             "open", "-a", "Terminal.app",
             "target/release/fisherman", "--signal-file", str(signal_file)
         ])
         print("Game opened in separate Terminal window!")
+        print("(Window will close automatically when game exits)")
         
     else:
-        # Linux
+        # Linux: Use -e flag which closes terminal when process exits
         subprocess.Popen([
             "x-terminal-emulator", "-e",
             "target/release/fisherman", "--signal-file", str(signal_file)
         ])
         print("Game opened in separate terminal!")
+        print("(Window will close automatically when game exits)")
     
     print()
     print("Control the game from here:")
@@ -57,12 +60,12 @@ def main():
                 break
                 
             elif command == 's':
-                signal_file.write_text("SUCCESS:Great job!")
+                signal_file.write_text("SUCCESS:Waargh!")
                 print(f"✓ Sent SUCCESS signal (file contains: {signal_file.read_text()!r})")
                 time.sleep(0.2)  # Give game time to read
                 
             elif command == 'f':
-                signal_file.write_text("FAILURE:Try again!")
+                signal_file.write_text("FAILURE:Graaagh!")
                 print(f"✗ Sent FAILURE signal (file contains: {signal_file.read_text()!r})")
                 time.sleep(0.2)
                 
