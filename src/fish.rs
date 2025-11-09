@@ -15,6 +15,8 @@ pub struct Fish {
     pub frame_duration: Duration,
     /// Delay (ms) before this fish appears; used to stagger spawns.
     pub spawn_delay_ms: u64,
+    /// Size of this fish instance (for catching mechanics)
+    pub size: f32,
 }
 
 // Layout constants
@@ -167,6 +169,7 @@ pub fn spawn_fishes<R: rand::Rng + ?Sized>(
             };
             let spawn_delay_ms = rng.gen_range(0..MAX_SPAWN_DELAY_MS);
             let x = compute_spawn_x(rng, dir_right, screen_width);
+            let size = crate::fishing_game::generate_fish_size(rng);
             
             fishes.push(Fish {
                 lane,
@@ -177,6 +180,7 @@ pub fn spawn_fishes<R: rand::Rng + ?Sized>(
                 species,
                 frame_duration: Duration::from_millis(DEFAULT_FRAME_DURATION_MS),
                 spawn_delay_ms,
+                size,
             });
         }
     }

@@ -97,6 +97,13 @@ pub fn load_frames_from_dir(dir: &str) -> io::Result<Vec<Text<'static>>> {
 /// Per-species pair: (right-facing frames, left-facing frames)
 pub type SpeciesFrames = (Vec<Text<'static>>, Vec<Text<'static>>);
 
+/// Species information including name and frames
+#[derive(Debug, Clone)]
+pub struct FishSpecies {
+    pub name: String,
+    pub frames: SpeciesFrames,
+}
+
 /// Load fish frames from a base fish directory. The expected layout is:
 ///
 /// src/fish/
@@ -113,7 +120,13 @@ pub type SpeciesFrames = (Vec<Text<'static>>, Vec<Text<'static>>);
 /// pair (right_frames, left_frames) for a single species directory found
 /// under `base_dir`.
 pub fn load_all_fish_frames(base_dir: &str) -> io::Result<Vec<SpeciesFrames>> {
-    let mut per_species: Vec<SpeciesFrames> = Vec::new();
+    let species_data = load_all_fish_species(base_dir)?;
+    Ok(species_data.into_iter().map(|s| s.frames).collect())
+}
+
+/// Load fish species with names and frames
+pub fn load_all_fish_species(base_dir: &str) -> io::Result<Vec<FishSpecies>> {
+    let mut per_species: Vec<FishSpecies> = Vec::new();
 
     let base = std::path::Path::new(base_dir);
     if !base.exists() {
@@ -124,6 +137,12 @@ pub fn load_all_fish_frames(base_dir: &str) -> io::Result<Vec<SpeciesFrames>> {
         let entry = entry?;
         let path = entry.path();
         if !path.is_dir() { continue; }
+
+        // Extract species name from directory name
+        let species_name = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Unknown")
+            .to_string();
 
         let mut right_frames: Vec<Text<'static>> = Vec::new();
         let mut left_frames: Vec<Text<'static>> = Vec::new();
@@ -144,7 +163,10 @@ pub fn load_all_fish_frames(base_dir: &str) -> io::Result<Vec<SpeciesFrames>> {
 
         // Only add species if it has any frames at all.
         if !right_frames.is_empty() || !left_frames.is_empty() {
-            per_species.push((right_frames, left_frames));
+            per_species.push(FishSpecies {
+                name: species_name,
+                frames: (right_frames, left_frames),
+            });
         }
     }
 

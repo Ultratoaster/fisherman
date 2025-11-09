@@ -8,6 +8,7 @@ mod widgets;
 mod fisherman;
 mod fish;
 mod fishing_line;
+mod fishing_game;
 
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -78,10 +79,11 @@ fn main() -> Result<(), io::Error> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut per_species = match csv_frames::load_all_fish_frames("src/fish") {
+    let species_list = match csv_frames::load_all_fish_species("src/fish") {
         Ok(v) => v,
         Err(_) => Vec::new(),
     };
+    let mut per_species: Vec<_> = species_list.iter().map(|s| s.frames.clone()).collect();
     if per_species.is_empty() {
         let fallback = load_frames_from_dir("src/fish").unwrap_or_else(|_| Vec::new());
         let fr = load_frames_from_dir("src/fish/right").unwrap_or_else(|_| fallback.clone());
@@ -120,6 +122,10 @@ fn main() -> Result<(), io::Error> {
     let max_cast_time = Duration::from_secs(2);
     let mut cast_animation_start: Option<Instant> = None;
     let cast_animation_duration = Duration::from_millis(800);
+    
+    // Catching state
+    let mut caught_fish: Option<fishing_game::CaughtFish> = None;
+    let mut catch_message_shown_at: Option<Instant> = None;
     
     loop {
         let now = Instant::now();
@@ -199,6 +205,44 @@ fn main() -> Result<(), io::Error> {
                         }
                     }
                 }
+                
+                // Check for fish catching when hook is in the water
+                if let FishingState::Landed { landing_x, landing_y, depth } = fishing_state {
+                    let hook_x = landing_x;
+                    let hook_y = landing_y.saturating_add(depth);
+                    let ocean_area = compute_ocean_area(Rect::new(0, 0, size.width, size.height));
+                    let (fish_area, _) = compute_fish_area(Rect::new(0, 0, size.width, size.height), ocean_area.y);
+                    
+                    // Check each fish for collision
+                    for (i, fish) in fishes.iter().enumerate() {
+                        if elapsed.as_millis() < fish.spawn_delay_ms as u128 {
+                            continue;
+                        }
+                        
+                        let fish_y = fish_area.y + (fish.lane as u16 * fish::FISH_HEIGHT) + fish::FISH_HEIGHT / 2;
+                        let fish_width = 22; // Approximate fish width from CSV
+                        let fish_height = fish::FISH_HEIGHT;
+                        
+                        if fishing_game::check_collision(hook_x, hook_y, fish.x, fish_y, fish_width, fish_height) {
+                            // Fish caught!
+                            let species_name = if fish.species < species_list.len() {
+                                species_list[fish.species].name.clone()
+                            } else {
+                                "Unknown Fish".to_string()
+                            };
+                            
+                            caught_fish = Some(fishing_game::CaughtFish::new(species_name, fish.size));
+                            catch_message_shown_at = Some(now);
+                            
+                            // Remove the caught fish
+                            fishes.remove(i);
+                            
+                            // Reel in the line
+                            fishing_state = FishingState::Idle;
+                            break;
+                        }
+                    }
+                }
             }
         }
 
@@ -241,11 +285,33 @@ fn main() -> Result<(), io::Error> {
                     Block::default().title("Fisherman").borders(Borders::ALL),
                 );
                 f.render_widget(done_par, size);
+            } else if let Some(ref caught) = caught_fish {
+                // Show caught fish message
+                let message = caught.format_catch();
+                let catch_par = Paragraph::new(Text::from(message))
+                    .block(Block::default().title("Nice Catch!").borders(Borders::ALL))
+                    .style(ratatui::style::Style::default().fg(ratatui::style::Color::Green));
+                
+                // Center the message box
+                let msg_width = 40;
+                let msg_height = 6;
+                let msg_x = size.width.saturating_sub(msg_width) / 2;
+                let msg_y = size.height.saturating_sub(msg_height) / 2;
+                let msg_area = Rect::new(msg_x, msg_y, msg_width, msg_height);
+                f.render_widget(catch_par, msg_area);
             } else {
                 let block = Block::default().title("Fisherman").borders(Borders::ALL);
                 f.render_widget(block, size);
             }
         })?;
+
+        // Clear caught fish message after 3 seconds
+        if let Some(shown_at) = catch_message_shown_at {
+            if now.duration_since(shown_at) > Duration::from_secs(3) {
+                caught_fish = None;
+                catch_message_shown_at = None;
+            }
+        }
 
         // Exit when fish caught or user presses 'q'
         if elapsed >= load_time {
