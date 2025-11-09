@@ -1,0 +1,11 @@
+[package]
+name = "fisherman"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ratatui = "0.30.0-beta.0"
+crossterm = "0.28"
+csv = "1.1"
+serde = { version = "1.0.228", features = ["derive"] }
+encoding = "0.2"
