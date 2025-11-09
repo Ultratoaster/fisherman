@@ -94,37 +94,22 @@ pub fn load_frames_from_dir(dir: &str) -> io::Result<Vec<Text<'static>>> {
     Ok(frames)
 }
 
-/// Per-species pair: (right-facing frames, left-facing frames)
 pub type SpeciesFrames = (Vec<Text<'static>>, Vec<Text<'static>>);
 
-/// Species information including name and frames
 #[derive(Debug, Clone)]
 pub struct FishSpecies {
     pub name: String,
     pub frames: SpeciesFrames,
 }
 
-/// Load fish frames from a base fish directory. The expected layout is:
-///
-/// src/fish/
+/// Expected file structure:
+/// base_dir/
 ///   species1/
 ///     left/*.csv
 ///     right/*.csv
 ///   species2/
 ///     left/*.csv
 ///     right/*.csv
-///
-/// This returns two vectors: (all_right_frames, all_left_frames) by concatenating
-/// frames found under each species' right/left subfolders. Missing folders are ignored.
-/// Return a vector containing per-species frame groups. Each element is a
-/// pair (right_frames, left_frames) for a single species directory found
-/// under `base_dir`.
-pub fn load_all_fish_frames(base_dir: &str) -> io::Result<Vec<SpeciesFrames>> {
-    let species_data = load_all_fish_species(base_dir)?;
-    Ok(species_data.into_iter().map(|s| s.frames).collect())
-}
-
-/// Load fish species with names and frames
 pub fn load_all_fish_species(base_dir: &str) -> io::Result<Vec<FishSpecies>> {
     let mut per_species: Vec<FishSpecies> = Vec::new();
 
@@ -138,7 +123,6 @@ pub fn load_all_fish_species(base_dir: &str) -> io::Result<Vec<FishSpecies>> {
         let path = entry.path();
         if !path.is_dir() { continue; }
 
-        // Extract species name from directory name
         let species_name = path.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("Unknown")
@@ -161,7 +145,6 @@ pub fn load_all_fish_species(base_dir: &str) -> io::Result<Vec<FishSpecies>> {
             }
         }
 
-        // Only add species if it has any frames at all.
         if !right_frames.is_empty() || !left_frames.is_empty() {
             per_species.push(FishSpecies {
                 name: species_name,

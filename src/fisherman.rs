@@ -20,7 +20,6 @@ impl Widget for Fisherman {
         let fx = right_x.saturating_sub(self.offset_from_right.min(area.width.saturating_sub(1)));
         let head_y = area.y;
 
-        // Draw head and torso
         buf.set_string(
             fx,
             head_y,

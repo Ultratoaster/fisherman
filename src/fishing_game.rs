@@ -1,6 +1,5 @@
 use rand::Rng;
 
-/// Information about a caught fish
 #[derive(Debug, Clone)]
 pub struct CaughtFish {
     pub species_name: String,
@@ -29,26 +28,19 @@ impl SizeCategory {
     }
 }
 
-/// Generate a random fish size using normal distribution (bell curve)
-/// Size range is typically 1.0 to 100.0, centered around 50.0
 pub fn generate_fish_size<R: Rng + ?Sized>(rng: &mut R) -> f32 {
-    // Use Box-Muller transform for normal distribution
-    let u1: f32 = rng.gen_range(0.001..1.0); // Avoid log(0)
+    let u1: f32 = rng.gen_range(0.001..1.0);
     let u2: f32 = rng.gen_range(0.0..1.0);
     
     let z0 = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
     
-    // Scale to our desired range: mean=50, stddev=15
-    // This gives ~68% of fish between 35-65, ~95% between 20-80
     let mean = 50.0;
     let stddev = 15.0;
     let size = mean + z0 * stddev;
     
-    // Clamp to reasonable bounds
     size.clamp(1.0, 100.0)
 }
 
-/// Categorize a fish size
 pub fn categorize_size(size: f32) -> SizeCategory {
     if size < 20.0 {
         SizeCategory::Tiny
@@ -63,8 +55,6 @@ pub fn categorize_size(size: f32) -> SizeCategory {
     }
 }
 
-/// Check if hook collides with a fish
-/// Returns true if the hook position overlaps with the fish's bounding box
 pub fn check_collision(
     hook_x: u16,
     hook_y: u16,
@@ -91,7 +81,6 @@ impl CaughtFish {
         }
     }
     
-    /// Format the caught fish as a display string
     pub fn format_catch(&self) -> String {
         let article = if self.size_category == SizeCategory::Average {
             "an"

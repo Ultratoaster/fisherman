@@ -127,7 +127,8 @@ fn main() -> Result<(), io::Error> {
     let mut catch_message_shown_at: Option<Instant> = None;
     
     let mut signal_received: Option<(bool, String)> = None;
-    let mut signal_time: Option<Instant> = None;
+    // This will be for handling signals for success/failure
+    // let mut signal_time: Option<Instant> = None;
     
     let sky_height = ocean_area.y;
     let sky_area = Rect::new(0, 0, initial_size.width, sky_height);
@@ -411,12 +412,14 @@ fn main() -> Result<(), io::Error> {
                         }
                     }
                     KeyCode::Char('s') => {
+                        // The following lines will be used for signaling success
                         signal_received = Some((true, "Success! Task completed.".to_string()));
-                        signal_time = Some(now);
+                        // signal_time = Some(now);
                     }
                     KeyCode::Char('f') => {
+                        // The following lines will be used for signaling failure
                         signal_received = Some((false, "Failed! Please try again.".to_string()));
-                        signal_time = Some(now);
+                        // signal_time = Some(now);
                     }
                     _ => {}
                 }
