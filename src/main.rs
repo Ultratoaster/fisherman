@@ -7,6 +7,9 @@ use std::env;
 use std::path::PathBuf;
 use std::fs;
 
+#[cfg(windows)]
+use std::fs::OpenOptions;
+
 mod csv_frames;
 mod ocean;
 mod widgets;
@@ -82,7 +85,13 @@ fn main() -> Result<(), io::Error> {
     let args: Vec<String> = env::args().collect();
     let subprocess_mode = args.contains(&"--subprocess".to_string());
     
-    // Check for --signal-file argument
+    // Check for --pipe argument (named pipe path)
+    let pipe_path: Option<PathBuf> = args.iter()
+        .position(|arg| arg == "--pipe")
+        .and_then(|i| args.get(i + 1))
+        .map(PathBuf::from);
+    
+    // Check for --signal-file argument (backward compatibility)
     let signal_file: Option<PathBuf> = args.iter()
         .position(|arg| arg == "--signal-file")
         .and_then(|i| args.get(i + 1))
@@ -110,7 +119,52 @@ fn main() -> Result<(), io::Error> {
         });
     }
     
-    // If signal file is specified, poll it in a thread
+    // If named pipe is specified, read from it in a thread
+    if let Some(ref path) = pipe_path {
+        let signal_clone = Arc::clone(&signal_received);
+        let path = path.clone();
+        thread::spawn(move || {
+            #[cfg(windows)]
+            {
+                // Windows named pipe: \\.\pipe\name
+                loop {
+                    if let Ok(file) = OpenOptions::new().read(true).open(&path) {
+                        let reader = BufReader::new(file);
+                        for line in reader.lines() {
+                            if let Ok(line) = line {
+                                let line = line.trim();
+                                if let Some(msg) = line.strip_prefix("SUCCESS:") {
+                                    *signal_clone.lock().unwrap() = Some((true, msg.to_string()));
+                                } else if let Some(msg) = line.strip_prefix("FAILURE:") {
+                                    *signal_clone.lock().unwrap() = Some((false, msg.to_string()));
+                                }
+                            }
+                        }
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                // Unix named pipe (FIFO)
+                if let Ok(file) = std::fs::File::open(&path) {
+                    let reader = BufReader::new(file);
+                    for line in reader.lines() {
+                        if let Ok(line) = line {
+                            let line = line.trim();
+                            if let Some(msg) = line.strip_prefix("SUCCESS:") {
+                                *signal_clone.lock().unwrap() = Some((true, msg.to_string()));
+                            } else if let Some(msg) = line.strip_prefix("FAILURE:") {
+                                *signal_clone.lock().unwrap() = Some((false, msg.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    
+    // If signal file is specified, poll it in a thread (backward compatibility)
     if let Some(ref path) = signal_file {
         let signal_clone = Arc::clone(&signal_received);
         let path = path.clone();
@@ -208,8 +262,8 @@ fn main() -> Result<(), io::Error> {
         last_update = now;
         let elapsed = start.elapsed();
         
-        // Check for signals from subprocess stdin or signal file
-        if subprocess_mode || signal_file.is_some() {
+        // Check for signals from subprocess stdin, pipe, or signal file
+        if subprocess_mode || pipe_path.is_some() || signal_file.is_some() {
             if let Ok(mut sig) = signal_received.lock() {
                 if sig.is_some() {
                     local_signal = sig.take();
@@ -524,15 +578,15 @@ fn main() -> Result<(), io::Error> {
                         }
                     }
                     KeyCode::Char('s') => {
-                        // Test signal: SUCCESS (works when not using stdin)
-                        if !subprocess_mode && signal_file.is_none() {
+                        // Test signal: SUCCESS (works when not using external signals)
+                        if !subprocess_mode && pipe_path.is_none() && signal_file.is_none() {
                             local_signal = Some((true, "Success! Task completed.".to_string()));
                             fisherman_kick = true;
                         }
                     }
                     KeyCode::Char('f') => {
-                        // Test signal: FAILURE (works when not using stdin)
-                        if !subprocess_mode && signal_file.is_none() {
+                        // Test signal: FAILURE (works when not using external signals)
+                        if !subprocess_mode && pipe_path.is_none() && signal_file.is_none() {
                             local_signal = Some((false, "Failed! Please try again.".to_string()));
                             fisherman_kick = false;
                         }
